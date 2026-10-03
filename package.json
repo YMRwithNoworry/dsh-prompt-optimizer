@@ -1,0 +1,84 @@
+{
+  "name": "dsh-prompt-optimizer",
+  "version": "1.0.0",
+  "description": "A general-purpose prompt optimizer for DeepSeek Harness: turn a casual, vague, or incomplete composer draft into a clear, structured, executable prompt — reviewed by the user, written back to the draft, and never sent automatically.",
+  "license": "MIT",
+  "author": "dsh-prompt-optimizer contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YMRwithNoworry/dsh-prompt-optimizer.git"
+  },
+  "homepage": "https://github.com/YMRwithNoworry/dsh-prompt-optimizer#readme",
+  "bugs": {
+    "url": "https://github.com/YMRwithNoworry/dsh-prompt-optimizer/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./settings": {
+      "default": "./dist/settings.js"
+    },
+    "./route": {
+      "default": "./dist/route.js"
+    },
+    "./config": {
+      "default": "./dist/config.js"
+    },
+    "./optimizer": {
+      "default": "./dist/optimizer/optimizer.js"
+    },
+    "./system-prompt": {
+      "default": "./dist/optimizer/system-prompt.js"
+    },
+    "./domains": {
+      "default": "./dist/optimizer/domains/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "prompt-optimizer",
+    "prompt-engineering",
+    "composer",
+    "cordis"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "npm run build && node --test test/",
+    "test:unit": "node --test test/",
+    "test:verbose": "node --test --test-reporter=spec test/"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

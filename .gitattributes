@@ -1,0 +1,12 @@
+# Normalize line endings on checkout so the plugin behaves the same on every
+# platform. The client bundle is shipped verbatim to the browser, and the build
+# output is committed, so both must stay byte-stable.
+* text=auto eol=lf
+
+# Binary assets are never normalized.
+*.png binary
+*.jpg binary
+*.ico binary
+
+# Generated output: keep it out of diffs noise but still committed.
+dist/** linguist-generated=true

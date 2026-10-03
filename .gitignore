@@ -1,0 +1,15 @@
+# Dependencies (installed by the profile, never committed here)
+node_modules/
+pnpm-lock.yaml
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+*.swp
+
+# Local scratch
+.scratch/
+*.tmp

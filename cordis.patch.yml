@@ -1,0 +1,32 @@
+# dsh-prompt-optimizer — profile bundle patch.
+#
+# One row: the host half. It owns the plugin's HTTP surface
+# (/prompt-optimizer/settings, /optimize, /health) and the settings file at
+# $DSH_HOME/prompt-optimizer.json.
+#
+# The browser half is mounted separately by the dsh.client declaration in
+# package.json, which the client-module registry reads; no row is needed for it.
+#
+# Later layers override this row by id, and a patch replaces the whole `config`
+# object, so a profile that customizes one field restates the others.
+
+- insert:
+    - id: prompt-optimizer
+      name: 'dsh-prompt-optimizer'
+      config:
+        # Reuse the session's own model. Set to "provider/model" to pin a
+        # different route; the settings panel writes this same field.
+        model: current
+        # light | balanced | deep
+        intensity: balanced
+        # auto | chinese | english | original
+        language: auto
+        autoDetectDomain: true
+        showPreview: true
+        useConversationContext: true
+        useProjectContext: true
+        minecraftOptimization: true
+        enableVisionContext: true
+        # Standing rules folded into every optimization. Empty by default;
+        # the settings panel writes this same field.
+        customInstructions: ''
