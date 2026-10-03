@@ -21,13 +21,15 @@ export * from "./shared/types.js";
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'prompt-optimizer';
 /**
- * Services this plugin uses when present.
+ * Required services.
  *
- * Declared as optional rather than required: the settings route and the
- * optimizer both degrade gracefully, and a hard dependency on `llm` would
- * leave the whole plugin pending in a profile that mounts no model.
+ * Deliberately empty. Cordis treats every name here as a service the plugin
+ * cannot start without — a hard dependency on `llm` or `webServer` would leave
+ * this plugin pending forever in a profile that mounts no model or no web
+ * server. Both are reached through `ctx.inject([...])` inside {@link apply}
+ * instead, which is what makes them genuinely optional.
  */
-export const inject = { optional: ['webServer', 'llm', 'agentDefaultModel'] };
+export const inject = [];
 /**
  * List provider/model routes for the settings panel.
  *
