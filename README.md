@@ -434,14 +434,29 @@ npm run test:verbose  # 逐条列出
 | `context.test.ts` | 规则文件白名单（源码不可读）、体积上限、会话裁剪 |
 | `route.test.ts` | 设置读写、优化成功/失败、空草稿与 no-op 不调模型、同源检查、超大 body |
 | `client.test.ts` | 按钮注册与三个 slot、空输入禁用、**点击永不 submit**、采用写入、竞态保护、全部失败路径 |
+| `client-render.test.ts` | 渲染结果本身：计划标签、Diff 切换与增删摘要、错误文案、no-op 说明、设置面板全部控件与 datalist |
 | `copy.test.ts` | 文案表无重复键、静态引用的文案键都已定义 |
+| `plugin-face.test.ts` | `inject` 形状（复刻 cordis 的 `Inject.resolve`）、两端导出的插件面 |
+| `packaging.test.ts` | 相对导入必须有扩展名、`dist/` 存在且无残留 `.ts` 说明符、bundle patch 与 `exports` 一致 |
 
 其中几条是**回归测试**，对应开发中真实出现过的 bug：
 
-- 客户端 factory 少了一个闭合花括号（`copy.test.ts` 之外的语法检查）
+- **`inject` 声明形状错误**：`{ optional: [...] }` 被 cordis 当成一个名为 `optional` 的必需服务，
+  插件会永远 pending、静默不加载。现在 `plugin-face.test.ts` 复刻了 `Inject.resolve` 来钉住语义。
+- **宿主半无法在 `node_modules` 下做类型擦除**：改为编译到 `dist/`，构建末尾会扫描产物，
+  只要还剩一个 `.ts` 说明符就报错退出（`packaging.test.ts` 也守这条）。
+- 客户端 factory 少了一个闭合花括号
 - `optimize()` 没有解析设置里的 `provider/model`，显式路由被忽略
 - `TEXT.original` 被语言选项的同名键覆盖，导致 Diff 栏标题显示成「原文语言」
 - 设置加载失败后界面卡在「加载中…」，错误信息不显示
+
+### 测试替身的一个坑
+
+`client-render.test.ts` 里的 React 替身最初把 children 放在元素节点上（`node.children`），
+而 React 实际放在 `props.children`。后果是 `Pane` 里 `props.children !== undefined` 恒为 false，
+Diff 视图的子内容被静默丢弃——测试却"通过"了，因为它只检查了 diff 开关的状态。
+替身现在与 React 一致：children 进 `props.children`，展开后为空则删除该属性。
+教训写在这里，是因为这类替身偏差不会报错，只会让测试失去意义。
 
 ---
 

@@ -1,0 +1,31 @@
+test: verify the rendered panel, and fix the React double that hid the diff view
+
+Adds test/client-render.test.ts (14 tests) covering what the user actually sees:
+the plan chips, the side-by-side panes, the diff toggle and its +/- summary, the
+no-op explanation, localized error copy, and every settings control including the
+provider/model datalist.
+
+Writing it exposed a defect in the test double, not in the plugin. The mock's
+createElement put children on the element (node.children) while React puts them
+in props.children. Pane branches on "props.children !== undefined", so under the
+mock it always took the fallback branch and rendered the plain text — the diff
+view's summary and per-line rows were silently dropped. The earlier tests still
+passed because they only asserted the toggle's own state.
+
+The double now matches React: children go into props.children, and an empty
+children is removed rather than kept as [], so a component that branches on
+undefined sees undefined. Tree walkers were updated accordingly.
+
+Also fixed in the same pass: openDialog returned a snapshot of the rendered tree,
+which goes stale on every re-render; it now returns the mounted handle and tests
+read the live tree.
+
+Two end-to-end checks were run against a real DSH instance (web profile, booted
+on an OS-assigned port, then shut down):
+  - the host half loads and serves its routes: /prompt-optimizer/health and
+    /settings both returned 200 with the documented defaults;
+  - the client half reaches the browser: the boot graph carries
+    dsh-prompt-optimizer/client.js&rev=..., and the combo URL serves 40893 bytes
+    of text/javascript with the correct registration id and exports.
+
+221 tests pass.
