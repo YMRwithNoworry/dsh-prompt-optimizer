@@ -30,11 +30,29 @@ const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
 const target = join(dshHome, 'profiles', profile, 'node_modules', PACKAGE)
 const staged = join(dshHome, 'profiles', profile, '.repair-product-design-skills')
 
-/** Count the files under a directory. */
+/**
+ * Count the files under a directory, or -1 when it cannot be read.
+ *
+ * A directory left in delete-pending state by a failed swap still stats as a
+ * directory but cannot be enumerated, so "readable with files in it" is the
+ * only test that distinguishes a healthy package from a broken one.
+ * @param dir - directory to walk.
+ * @returns the file count, or -1 when unreadable.
+ */
 function countFiles(dir) {
   let total = 0
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    total += entry.isDirectory() ? countFiles(join(dir, entry.name)) : 1
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const nested = countFiles(join(dir, entry.name))
+        if (nested < 0) return -1
+        total += nested
+      } else {
+        total += 1
+      }
+    }
+  } catch {
+    return -1
   }
   return total
 }
@@ -47,9 +65,13 @@ if (!existsSync(join(target, 'package.json'))) {
 
 // The skills directory is the part that goes missing, because it is the part
 // the running app holds open.
-if (existsSync(join(target, 'skills')) && countFiles(join(target, 'skills')) > 0) {
-  console.log(`repair: skills are intact (${countFiles(join(target, 'skills'))} files) — nothing to do`)
+const skillCount = countFiles(join(target, 'skills'))
+if (skillCount > 0) {
+  console.log(`repair: skills are intact (${skillCount} files) — nothing to do`)
   process.exit(0)
+}
+if (skillCount < 0) {
+  console.log('repair: the skills directory exists but cannot be read — a failed swap left it pending deletion.')
 }
 
 if (!existsSync(staged)) {
@@ -64,11 +86,20 @@ try {
   if (existsSync(skills)) rmSync(skills, { recursive: true, force: true })
   mkdirSync(skills, { recursive: true })
   cpSync(staged, skills, { recursive: true })
-  console.log(`repair: restored ${countFiles(skills)} skill files into ${skills}`)
+
+  // Verify before cleaning up: a copy that half-succeeded must not delete the
+  // only good copy.
+  const restored = countFiles(skills)
+  const expected = countFiles(staged)
+  if (restored !== expected) {
+    console.error(`repair: restored ${restored} of ${expected} files — the staged copy is kept at ${staged}`)
+    process.exit(1)
+  }
   rmSync(staged, { recursive: true, force: true })
+  console.log(`repair: restored ${restored} skill files into ${skills}`)
   console.log('repair: done')
 } catch (error) {
-  console.error('repair: still locked — the DSH app is holding the directory.')
+  console.error('repair: still locked (' + error.code + ') — the DSH app is holding the directory.')
   console.error('repair: quit the DSH desktop app completely, then run this again.')
   console.error('repair: the staged copy is safe at ' + staged)
   process.exit(1)
