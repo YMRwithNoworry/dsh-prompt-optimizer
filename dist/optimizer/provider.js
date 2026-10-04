@@ -101,6 +101,14 @@ export async function complete(ctx, route, system, user, options) {
         ? options.reasoningEffort.trim()
         : undefined;
     try {
+        // Deliberately no `temperature`. The harness's own agent loop never sends
+        // one, and neither does the official session-title provider. Reasoning
+        // models — every model that declares `reasoningEfforts`, which includes the
+        // desktop default — reject a sampling temperature outright, so sending one
+        // made the optimizer fail with a provider error on exactly the models most
+        // people have selected. Determinism is not worth a request the provider
+        // refuses; the system prompt's output contract is what keeps the result
+        // stable.
         for await (const chunk of ctx.llm.stream({
             provider: route.provider,
             model: route.model,
@@ -108,9 +116,6 @@ export async function complete(ctx, route, system, user, options) {
             messages: [userMessage(user)],
             system,
             maxTokens: options.maxTokens,
-            // The architect must be predictable, not creative. A low temperature is
-            // what keeps the same draft producing the same prompt.
-            temperature: 0.2,
             ...(options.signal === undefined ? {} : { signal: options.signal }),
             purpose: 'session-title',
         })) {

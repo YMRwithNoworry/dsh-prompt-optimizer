@@ -288,3 +288,30 @@ test('a per-call setting effort overrides the session effort', async () => {
   assert.equal(seen.reasoningEffort, 'high')
 })
 
+
+// --- request shape --------------------------------------------------------
+
+test('the request carries no sampling temperature', async () => {
+  // Reasoning models reject a sampling temperature, and every model that
+  // declares reasoningEfforts is one of them — including the desktop default.
+  // The harness's own agent loop and the official session-title provider never
+  // send one either, which is the precedent this follows.
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, { text: '做个后台', settings: { ...settings, model: 'p/m', reasoningEffort: 'high' } })
+  assert.equal('temperature' in seen, false, 'a temperature would make reasoning models fail')
+})
+
+test('the request carries only the fields the harness itself sends', async () => {
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, { text: '做个后台', settings: { ...settings, model: 'p/m', reasoningEffort: 'high' } })
+  assert.deepEqual(Object.keys(seen).sort(), [
+    'maxTokens',
+    'messages',
+    'model',
+    'provider',
+    'purpose',
+    'reasoningEffort',
+    'system',
+  ])
+})
+
