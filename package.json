@@ -75,7 +75,8 @@
     "build": "node scripts/build.mjs",
     "test": "npm run build && node --test test/",
     "test:unit": "node --test test/",
-    "test:verbose": "node --test --test-reporter=spec test/"
+    "test:verbose": "node --test --test-reporter=spec test/",
+    "repair:product-design": "node scripts/repair-product-design.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

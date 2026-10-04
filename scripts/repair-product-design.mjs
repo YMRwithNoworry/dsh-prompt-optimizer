@@ -1,0 +1,75 @@
+#!/usr/bin/env node
+/**
+ * Repair `dsh-plugin-product-design` in a DSH profile.
+ *
+ * Why this exists: pnpm's atomic directory swap removes the old package before
+ * renaming the new one in. If the target directory is held open — which happens
+ * when the DSH desktop app is running, because it loads the package's skills —
+ * the swap fails partway and leaves the package as an empty shell. `pnpm
+ * install` then cannot repair itself: it hits the same lock, reports
+ * `failed to remove existing directory ... prior to swap`, and gives up.
+ *
+ * The fix is to stop the app, let the pending delete complete, and copy the
+ * package back in. This script does the copy and tells you what to do about the
+ * lock.
+ *
+ * Usage:
+ *   node scripts/repair-product-design.mjs [profileName]
+ *
+ * @module dsh-prompt-optimizer/scripts/repair-product-design
+ */
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const PACKAGE = 'dsh-plugin-product-design'
+const profile = process.argv[2] ?? 'desktop'
+const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+const target = join(dshHome, 'profiles', profile, 'node_modules', PACKAGE)
+const staged = join(dshHome, 'profiles', profile, '.repair-product-design-skills')
+
+/** Count the files under a directory. */
+function countFiles(dir) {
+  let total = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    total += entry.isDirectory() ? countFiles(join(dir, entry.name)) : 1
+  }
+  return total
+}
+
+if (!existsSync(join(target, 'package.json'))) {
+  console.error(`repair: ${PACKAGE} is missing or incomplete at ${target}`)
+} else {
+  console.log(`repair: ${PACKAGE} is present at ${target}`)
+}
+
+// The skills directory is the part that goes missing, because it is the part
+// the running app holds open.
+if (existsSync(join(target, 'skills')) && countFiles(join(target, 'skills')) > 0) {
+  console.log(`repair: skills are intact (${countFiles(join(target, 'skills'))} files) — nothing to do`)
+  process.exit(0)
+}
+
+if (!existsSync(staged)) {
+  console.error('repair: no staged copy found.')
+  console.error('repair: stop the DSH desktop app, then run:')
+  console.error(`repair:   dsh plugin --profile ${profile} add ${PACKAGE}`)
+  process.exit(1)
+}
+
+const skills = join(target, 'skills')
+try {
+  if (existsSync(skills)) rmSync(skills, { recursive: true, force: true })
+  mkdirSync(skills, { recursive: true })
+  cpSync(staged, skills, { recursive: true })
+  console.log(`repair: restored ${countFiles(skills)} skill files into ${skills}`)
+  rmSync(staged, { recursive: true, force: true })
+  console.log('repair: done')
+} catch (error) {
+  console.error('repair: still locked — the DSH app is holding the directory.')
+  console.error('repair: quit the DSH desktop app completely, then run this again.')
+  console.error('repair: the staged copy is safe at ' + staged)
+  process.exit(1)
+}

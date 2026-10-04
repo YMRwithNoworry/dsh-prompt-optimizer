@@ -413,6 +413,30 @@ Error: Stripping types is currently unsupported for files under node_modules
 `dist/` 是提交进仓库的，这样 `git` 安装无需构建步骤。改完源码记得 `npm run build`——
 `test/packaging.test.ts` 会检查 `dist/` 是否比源码旧。
 
+### ⚠️ 在应用运行时不要对 profile 跑 `pnpm install`
+
+pnpm 换目录是「先删旧的、再改名新的」。如果目标目录正被占用——DSH 桌面应用运行时就会占用
+它加载的插件目录——这次换目录会**中途失败**，被删掉的包可能只留下一个空壳。
+
+本插件在一次开发中就这样损坏了 desktop profile 的 `dsh-plugin-product-design`（它的
+`skills/` 目录被应用持有）。`pnpm install` 无法自愈，因为它会撞上同一把锁并报
+`failed to remove existing directory ... prior to swap`。
+
+**正确做法**：安装插件前先完全退出 DSH。若已经损坏：
+
+```bash
+# 1. 完全退出 DSH 桌面应用
+# 2. 让挂起的删除完成，然后修复
+npm run repair:product-design -- desktop
+
+# 或者用 pnpm 重装（仅在没有 DSH 运行时）
+cd ~/.dsh/profiles/desktop && pnpm install
+```
+
+`repair:product-design` 会检查包是否完整；若 `skills/` 缺失就就地恢复，并在目录仍被占用时
+明确告诉你先退出应用，而不是静默失败。pnpm 在换目录失败时会把被移除的包留在
+`node_modules/.ignored/`，所以数据通常是可以找回的。
+
 ### 本地迭代
 
 profile 用 `file:` 安装时 pnpm 默认是**拷贝**而不是软链，所以改完代码要重新装一次：
