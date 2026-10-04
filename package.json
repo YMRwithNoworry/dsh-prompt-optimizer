@@ -49,6 +49,7 @@
     "dist",
     "lib",
     "src",
+    "scripts",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -73,6 +74,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "sync": "node scripts/sync-to-profile.mjs",
     "test": "npm run build && node --test test/",
     "test:unit": "node --test test/",
     "test:verbose": "node --test --test-reporter=spec test/",

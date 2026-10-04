@@ -422,6 +422,16 @@ pnpm 换目录是「先删旧的、再改名新的」。如果目标目录正被
 `skills/` 目录被应用持有）。`pnpm install` 无法自愈，因为它会撞上同一把锁并报
 `failed to remove existing directory ... prior to swap`。
 
+**更新已安装的插件不需要 pnpm。** 用这个脚本按文件覆盖，它没有目录换名，因此应用运行时也能用，
+也不会把包删成空壳：
+
+```bash
+npm run sync -- desktop      # 把当前构建同步进 desktop profile
+npm run sync -- web --check  # 只看会写哪些文件
+```
+
+首次安装仍然需要 pnpm（或应用自己的插件管理器）来登记依赖；之后更新用 `sync` 就够了。
+
 **正确做法**：安装插件前先完全退出 DSH。若已经损坏：
 
 ```bash
