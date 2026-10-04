@@ -88,7 +88,7 @@ export function userMessage(text) {
  * @param route - provider/model to call.
  * @param system - the Prompt Architect system prompt.
  * @param user - the framed draft.
- * @param options - token ceiling, cancellation, and an optional reasoning effort.
+ * @param options - cancellation and an optional reasoning effort.
  * @returns the assembled text.
  * @throws OptimizeError on an empty result, a tool call, truncation, or a provider failure.
  */
@@ -115,7 +115,10 @@ export async function complete(ctx, route, system, user, options) {
             ...(effort === undefined ? {} : { reasoningEffort: effort }),
             messages: [userMessage(user)],
             system,
-            maxTokens: options.maxTokens,
+            // No maxTokens: the adapter materializes the model's own per-request cap,
+            // which is what the harness's agent loop relies on too. A caller-chosen
+            // value has to cover the reasoning tokens as well as the answer, and
+            // getting that wrong truncates the reply.
             ...(options.signal === undefined ? {} : { signal: options.signal }),
             purpose: 'session-title',
         })) {

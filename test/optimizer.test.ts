@@ -305,7 +305,6 @@ test('the request carries only the fields the harness itself sends', async () =>
   const { ctx, seen } = capturingContext()
   await optimize(ctx, { text: '做个后台', settings: { ...settings, model: 'p/m', reasoningEffort: 'high' } })
   assert.deepEqual(Object.keys(seen).sort(), [
-    'maxTokens',
     'messages',
     'model',
     'provider',
@@ -313,5 +312,34 @@ test('the request carries only the fields the harness itself sends', async () =>
     'reasoningEffort',
     'system',
   ])
+})
+
+test('the request carries no maxTokens, so the adapter owns the ceiling', async () => {
+  // A caller-chosen cap must cover the reasoning tokens as well as the answer.
+  // The desktop default advertises 256000, and a model reasoning at "high"
+  // exhausted the old 8000-token cap before writing anything, which surfaced to
+  // the user as "模型输出被截断". Omitting the field is what the harness's own
+  // agent loop does; the adapter materializes the model's per-request cap.
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, {
+    text: '做一个完整的桌面应用，支持账号、同步、主题和插件系统，需要端到端架构设计。',
+    settings: { ...settings, model: 'p/m', reasoningEffort: 'high' },
+  })
+  assert.equal('maxTokens' in seen, false, 'the adapter owns the token ceiling')
+})
+
+test('a complex task sends the same request shape as a trivial one', async () => {
+  // The shape must not vary with the complexity verdict: a low cap on a small
+  // task is the same defect as a low cap on a large one.
+  const shapes = []
+  for (const text of [
+    '做个后台',
+    '做一个完整的桌面应用，支持账号、同步、主题和插件系统，需要端到端架构设计以及完整的数据迁移方案。',
+  ]) {
+    const { ctx, seen } = capturingContext()
+    await optimize(ctx, { text, settings: { ...settings, model: 'p/m' } })
+    shapes.push(Object.keys(seen).sort().join(','))
+  }
+  assert.equal(shapes[0], shapes[1])
 })
 

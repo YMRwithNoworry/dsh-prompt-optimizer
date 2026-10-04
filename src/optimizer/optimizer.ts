@@ -177,10 +177,6 @@ export async function optimize(ctx: LlmContext, input: OptimizeInput): Promise<O
   })
   const user = buildUserMessage(input.text)
 
-  // Headroom over the budget: the model needs room to think before it writes,
-  // and the budget itself is a soft target rather than a hard truncation.
-  const maxTokens = Math.min(8000, Math.max(600, Math.ceil(plan.complexity.budget / 2)))
-
   // A non-empty effort setting is always a deliberate choice — the settings
   // panel clears it whenever it stops matching the selected route — so it wins
   // over the session's. Only an empty setting defers to the session.
@@ -188,8 +184,21 @@ export async function optimize(ctx: LlmContext, input: OptimizeInput): Promise<O
     ? input.settings.reasoningEffort
     : (input.sessionRoute?.reasoningEffort ?? '')
 
+  // Deliberately no `maxTokens`.
+  //
+  // This used to be derived from the complexity budget, capped at 8000. That is
+  // far below what the models actually declare — the desktop default advertises
+  // 256000 — and, more importantly, a reasoning model spends its reasoning
+  // tokens out of the same allowance. A model reasoning at "high" therefore
+  // exhausted the cap before it wrote a single character and the request ended
+  // as `max-tokens`, which surfaced as "模型输出被截断".
+  //
+  // Omitting the field is what the harness itself does: the agent loop only
+  // passes `maxTokens` when a deployment configured one, and the adapter
+  // materializes the model's own per-request cap when the caller omits it. The
+  // output length is governed by the system prompt's character budget, which is
+  // a soft target the model can read, rather than by a hard truncation it cannot.
   const result: CompletionResult = await complete(ctx, route, system, user, {
-    maxTokens,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     ...(reasoningEffort.trim().length === 0 ? {} : { reasoningEffort }),
   })
