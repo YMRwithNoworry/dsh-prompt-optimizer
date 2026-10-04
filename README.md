@@ -142,7 +142,8 @@ dsh-prompt-optimizer: active — model current, intensity balanced, language aut
 
 | 设置 | 默认 | 说明 |
 | --- | --- | --- |
-| **优化模型** | `current` | `current` = 复用当前会话的模型；也可填 `provider/model` |
+| **优化模型** | `current` | 下拉框，直接列出 DSH 已配置的 **provider / model**；`current` = 复用当前会话的模型 |
+| **思考强度** | 跟随模型默认 | 选中模型支持的推理档位（如 medium / high / max）；选「默认」则由该模型自己决定 |
 | **优化强度** | `balanced` | `light` 只修表达 / `balanced` 补全约束并结构化 / `deep` 建立目标、标准与验收条件 |
 | **优化语言** | `auto` | `auto` 跟随原文 / `chinese` / `english` / `original` |
 | **自动识别领域** | 开 | 关闭后一律使用通用策略 |
@@ -315,15 +316,47 @@ dsh-prompt-optimizer/
 
 ## 模型配置
 
-插件**不硬编码任何模型**，也不要求你重新配 API Key。它按以下顺序解析路由：
+插件**不硬编码任何模型**，也不要求你重新配 API Key。
 
-1. 设置里的显式 `provider/model`
-2. 调用会话当前使用的模型
+设置面板里的「优化模型」是一个下拉框，选项来自 DSH 自己的 LLM 服务：插件调用
+`ctx.llm.listProviders()` 与 `listModels()` 枚举当前 profile 真正连得上的路由，再对每个路由调用
+`resolveModelInfo()` 取它支持的**思考强度**。结果是：
+
+- 你在 DSH 里配置过的模型，这里直接可选，不需要手打 `provider/model`；
+- 换模型时「思考强度」自动切换成该模型支持的档位；
+- 切到一个不支持当前强度的模型时，该强度会被自动清空（强度 id 是路由私有的）；
+- 两个模型都支持的强度在切换后保留。
+
+路由解析顺序：
+
+1. 设置里显式选定的 `provider/model`
+2. 调用会话当前使用的模型（连同它在会话里选的思考强度）
 3. harness 全局默认模型（`ctx.agentDefaultModel`）
 
 解析结果交给 `ctx.llm.stream()`，所以认证、重试、代理、适配器行为**完全复用 DSH 现有的那套**。
 
+思考强度**只在非空时**才传给适配器。多数 provider 不暴露任何档位，传一个空字符串会让它们直接拒绝请求，
+所以「默认」是真的不传。
+
 温度固定为 `0.2`：架构师要的是可复现，不是创造力。
+
+### 为什么下拉框里是空的
+
+设置面板会说明原因，而不是只给一个空列表：
+
+| `discovery.llmAvailable` | `providerCount` | 含义 |
+| --- | --- | --- |
+| `false` | — | 该 profile 没有挂载 LLM 服务（`llm` / `llm-pi-ai` / `llm-deepseek`） |
+| `true` | `0` | 有服务，但没有任何 adapter 注册路由 |
+| `true` | `>0` | 正常；`failedProviders` 里的 provider 表示它的 `listModels` 抛错或超时 |
+
+无论哪种情况 `current` 始终可选，插件其余功能不受影响。
+
+> **实现注意**：cordis 只会把服务交给在 `inject` 里声明过它的 fiber。直接读 `ctx.llm` 拿到的是
+> `undefined`——不报错，只是所有 LLM 功能静默失效。又因为本插件必须在没有模型的 profile 里也能启动，
+> 它不能把 `llm` 写进 `inject`（那会变成**必需**依赖，插件会永远 pending）。
+> 所以三个可选服务统一通过 `ctx.inject([name], scoped => …)` 惰性解析，见 `resolveServices`。
+> `test/plugin-face.test.ts` 会断言源码里不存在任何 `ctx.llm` / `ctx.webServer` 直接读取。
 
 ---
 
@@ -434,17 +467,21 @@ npm run test:verbose  # 逐条列出
 | `context.test.ts` | 规则文件白名单（源码不可读）、体积上限、会话裁剪 |
 | `route.test.ts` | 设置读写、优化成功/失败、空草稿与 no-op 不调模型、同源检查、超大 body |
 | `client.test.ts` | 按钮注册与三个 slot、空输入禁用、**点击永不 submit**、采用写入、竞态保护、全部失败路径 |
-| `client-render.test.ts` | 渲染结果本身：计划标签、Diff 切换与增删摘要、错误文案、no-op 说明、设置面板全部控件与 datalist |
+| `client-render.test.ts` | 渲染结果本身：计划标签、Diff 切换与增删摘要、错误文案、no-op 说明、模型与思考强度下拉框的全部行为 |
+| `model-routes.test.ts` | 模型发现：provider/model 枚举、强度元数据、超时与抛错的降级、路由上限、取消 |
 | `copy.test.ts` | 文案表无重复键、静态引用的文案键都已定义 |
-| `plugin-face.test.ts` | `inject` 形状（复刻 cordis 的 `Inject.resolve`）、两端导出的插件面 |
+| `plugin-face.test.ts` | `inject` 形状（复刻 cordis 的 `Inject.resolve`）、**禁止直接读 `ctx.llm` 等可选服务**、两端导出的插件面 |
 | `packaging.test.ts` | 相对导入必须有扩展名、`dist/` 存在且无残留 `.ts` 说明符、bundle patch 与 `exports` 一致 |
 
 其中几条是**回归测试**，对应开发中真实出现过的 bug：
 
 - **`inject` 声明形状错误**：`{ optional: [...] }` 被 cordis 当成一个名为 `optional` 的必需服务，
   插件会永远 pending、静默不加载。现在 `plugin-face.test.ts` 复刻了 `Inject.resolve` 来钉住语义。
+- **直接读 `ctx.llm` 拿到 undefined**：cordis 只把服务交给声明过它的 fiber。这个 bug 让模型发现
+  返回 0 条路由、`/optimize` 必然 `NO_ROUTE`，而日志里**没有任何线索**。现在服务统一走
+  `ctx.inject([name], scoped => …)` 惰性解析，并有源码级断言禁止直接读取。
 - **宿主半无法在 `node_modules` 下做类型擦除**：改为编译到 `dist/`，构建末尾会扫描产物，
-  只要还剩一个 `.ts` 说明符就报错退出（`packaging.test.ts` 也守这条）。
+  只要还剩一个 `.ts` 说明符就报错退出。
 - 客户端 factory 少了一个闭合花括号
 - `optimize()` 没有解析设置里的 `provider/model`，显式路由被忽略
 - `TEXT.original` 被语言选项的同名键覆盖，导致 Diff 栏标题显示成「原文语言」

@@ -138,9 +138,16 @@ export async function optimize(ctx, input) {
     // Headroom over the budget: the model needs room to think before it writes,
     // and the budget itself is a soft target rather than a hard truncation.
     const maxTokens = Math.min(8000, Math.max(600, Math.ceil(plan.complexity.budget / 2)));
+    // A non-empty effort setting is always a deliberate choice — the settings
+    // panel clears it whenever it stops matching the selected route — so it wins
+    // over the session's. Only an empty setting defers to the session.
+    const reasoningEffort = input.settings.reasoningEffort.trim().length > 0
+        ? input.settings.reasoningEffort
+        : (input.sessionRoute?.reasoningEffort ?? '');
     const result = await complete(ctx, route, system, user, {
         maxTokens,
         ...(input.signal === undefined ? {} : { signal: input.signal }),
+        ...(reasoningEffort.trim().length === 0 ? {} : { reasoningEffort }),
     });
     const optimized = normalizeModelOutput(result.text);
     return {

@@ -210,3 +210,81 @@ test('normalize does not eat content that merely starts with a keyword', () => {
 test('normalize trims surrounding whitespace', () => {
   assert.equal(normalizeModelOutput('\n\n  body  \n\n'), 'body')
 })
+
+// --- reasoning effort -----------------------------------------------------
+
+/** Capture the options handed to `llm.stream`. */
+function capturingContext() {
+  const seen = {}
+  return {
+    seen,
+    ctx: {
+      llm: {
+        async *stream(options) {
+          Object.assign(seen, options)
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'text-delta', index: 0, text: 'out' }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: 'out' } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        },
+      },
+    },
+  }
+}
+
+test('no effort is forwarded when the setting is empty', async () => {
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, { text: '做个后台', settings: { ...settings, model: 'p/m', reasoningEffort: '' } })
+  assert.equal('reasoningEffort' in seen, false, 'an empty effort must not reach the adapter')
+})
+
+test('a chosen effort is forwarded to the provider', async () => {
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, { text: '做个后台', settings: { ...settings, model: 'p/m', reasoningEffort: 'high' } })
+  assert.equal(seen.reasoningEffort, 'high')
+})
+
+test('whitespace around an effort is trimmed', async () => {
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, { text: '做个后台', settings: { ...settings, model: 'p/m', reasoningEffort: '  low  ' } })
+  assert.equal(seen.reasoningEffort, 'low')
+})
+
+test('the effort does not leak into the request body as an empty field', async () => {
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, { text: '做个后台', settings: { ...settings, model: 'p/m', reasoningEffort: '   ' } })
+  assert.equal('reasoningEffort' in seen, false)
+})
+
+test('an explicit route uses its own effort, not the session\'s', async () => {
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, {
+    text: '做个后台',
+    settings: { ...settings, model: 'p/m', reasoningEffort: 'high' },
+    sessionRoute: { provider: 's', model: 'sm', reasoningEffort: 'low' },
+  })
+  assert.equal(seen.provider, 'p')
+  assert.equal(seen.reasoningEffort, 'high', 'the pinned route owns its effort')
+})
+
+test('following the session also follows its effort', async () => {
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, {
+    text: '做个后台',
+    settings: { ...settings, model: 'current', reasoningEffort: '' },
+    sessionRoute: { provider: 's', model: 'sm', reasoningEffort: 'medium' },
+  })
+  assert.equal(seen.provider, 's')
+  assert.equal(seen.reasoningEffort, 'medium')
+})
+
+test('a per-call setting effort overrides the session effort', async () => {
+  const { ctx, seen } = capturingContext()
+  await optimize(ctx, {
+    text: '做个后台',
+    settings: { ...settings, model: 'current', reasoningEffort: 'high' },
+    sessionRoute: { provider: 's', model: 'sm', reasoningEffort: 'low' },
+  })
+  assert.equal(seen.reasoningEffort, 'high')
+})
+

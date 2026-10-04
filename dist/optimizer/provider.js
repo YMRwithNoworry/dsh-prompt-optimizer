@@ -88,16 +88,23 @@ export function userMessage(text) {
  * @param route - provider/model to call.
  * @param system - the Prompt Architect system prompt.
  * @param user - the framed draft.
- * @param options - token ceiling and cancellation.
+ * @param options - token ceiling, cancellation, and an optional reasoning effort.
  * @returns the assembled text.
  * @throws OptimizeError on an empty result, a tool call, truncation, or a provider failure.
  */
 export async function complete(ctx, route, system, user, options) {
     const assembler = new ChunkAssembler();
+    // The effort is forwarded only when one was actually chosen. Passing an empty
+    // or unknown value would reject a route whose adapter exposes no efforts at
+    // all, which is the common case.
+    const effort = typeof options.reasoningEffort === 'string' && options.reasoningEffort.trim().length > 0
+        ? options.reasoningEffort.trim()
+        : undefined;
     try {
         for await (const chunk of ctx.llm.stream({
             provider: route.provider,
             model: route.model,
+            ...(effort === undefined ? {} : { reasoningEffort: effort }),
             messages: [userMessage(user)],
             system,
             maxTokens: options.maxTokens,

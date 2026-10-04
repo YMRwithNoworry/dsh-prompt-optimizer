@@ -68,12 +68,37 @@ test('the host half requires no service, so it never waits on one', async () => 
 
 test('the host half reaches optional services through ctx.inject instead', async () => {
   const source = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
-  assert.ok(source.includes("ctx.inject?.(['webServer']"), 'webServer must be reached through ctx.inject')
+  assert.ok(source.includes('resolveServices'), 'services must be resolved through one helper')
   // And it must not name llm/webServer in the required list.
   const declaration = /export const inject[^=]*=\s*([^\n]+)/.exec(source)
   assert.ok(declaration !== null, 'the inject declaration must be present')
   assert.ok(!declaration[1].includes('webServer'), 'webServer must not be required')
   assert.ok(!declaration[1].includes('llm'), 'llm must not be required')
+})
+
+test('the host half never reads a service directly off ctx', () => {
+  // Cordis's context proxy traps a service read from a fiber that did not
+  // declare it and returns undefined. A direct `ctx.llm` therefore looks
+  // correct and silently disables every LLM-backed feature: discovery reported
+  // zero providers, and the optimizer would have failed with NO_ROUTE — with
+  // nothing in the log to explain it.
+  const source = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
+  const code = source.split('\n')
+    .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+    .join('\n')
+  for (const service of ['llm', 'agentDefaultModel', 'webServer']) {
+    assert.ok(!code.includes('ctx.' + service), 'read ' + service + ' through the resolved view, not ctx')
+  }
+})
+
+test('resolveServices reads each service from its injected scope', () => {
+  const source = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
+  const body = /function resolveServices[\s\S]*?\n}/.exec(source)
+  assert.ok(body !== null, 'resolveServices must exist')
+  // The value must come from the injected scope: that is the only context in
+  // which cordis resolves a service the plugin does not require.
+  assert.ok(body[0].includes('scoped[name]'), 'the service must be read from the injected scope')
+  assert.ok(body[0].includes('ctx.inject'), 'the scope comes from ctx.inject')
 })
 
 test('no inject declaration names a service called "optional"', async () => {

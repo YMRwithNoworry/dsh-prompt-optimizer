@@ -173,3 +173,21 @@ test('settingsPath lives directly under DSH_HOME', () => {
   assert.ok(path.startsWith('D:/custom'))
   assert.ok(path.endsWith('prompt-optimizer.json'))
 })
+
+test('an empty reasoning effort is the default, so no route is forced', () => {
+  // Most providers expose no efforts at all, so pinning one must never be required.
+  assert.equal(DEFAULT_SETTINGS.reasoningEffort, '')
+})
+
+test('a reasoning effort is trimmed and length-capped', () => {
+  assert.equal(normalizeSettings({ reasoningEffort: '  high  ' }).reasoningEffort, 'high')
+  assert.equal(normalizeSettings({ reasoningEffort: '   ' }).reasoningEffort, '')
+  assert.ok(normalizeSettings({ reasoningEffort: 'x'.repeat(500) }).reasoningEffort.length <= 100)
+})
+
+test('an unknown reasoning effort is preserved, not validated away', () => {
+  // The plugin cannot know which ids a route accepts, and the adapter rejects
+  // an unsupported one itself. Dropping it here would silently undo the choice.
+  assert.equal(normalizeSettings({ reasoningEffort: 'very-high' }).reasoningEffort, 'very-high')
+})
+

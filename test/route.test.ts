@@ -36,7 +36,14 @@ function makeHandler(options = {}) {
     ctx: options.ctx ?? stubContext(options),
     getSettings: () => settings,
     setSettings: (next) => { settings = next; return settings },
-    listRoutes: () => options.routes ?? [],
+    // Discovery now returns routes plus diagnostics, so an empty list can be
+    // explained rather than merely shown.
+    listRoutes: () => Promise.resolve(options.discovery ?? {
+      routes: options.routes ?? [],
+      llmAvailable: true,
+      providerCount: (options.routes ?? []).length > 0 ? 1 : 0,
+      failedProviders: [],
+    }),
   })
   return { handler, get settings() { return settings } }
 }
@@ -64,12 +71,37 @@ async function call(handler, method, url, body, headers = {}) {
 // --- settings -------------------------------------------------------------
 
 test('GET /settings returns the stored settings, defaults, and routes', async () => {
-  const { handler } = makeHandler({ routes: [{ provider: 'deepseek', models: ['deepseek-chat'] }] })
+  const route = { provider: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-chat', modelName: 'DeepSeek Chat', value: 'deepseek/deepseek-chat', efforts: [] }
+  const { handler } = makeHandler({ routes: [route] })
   const result = await call(handler, 'GET', '/prompt-optimizer/settings')
   assert.equal(result.status, 200)
   assert.equal(result.payload.settings.model, 'p/m')
   assert.equal(result.payload.defaults.intensity, 'balanced')
-  assert.deepEqual(result.payload.routes, [{ provider: 'deepseek', models: ['deepseek-chat'] }])
+  assert.deepEqual(result.payload.routes, [route])
+  assert.deepEqual(result.payload.discovery, { llmAvailable: true, providerCount: 1, failedProviders: [] })
+})
+
+test('GET /settings reports why discovery found nothing', async () => {
+  const { handler } = makeHandler({
+    discovery: { routes: [], llmAvailable: true, providerCount: 2, failedProviders: ['deepseek'] },
+  })
+  const result = await call(handler, 'GET', '/prompt-optimizer/settings')
+  assert.deepEqual(result.payload.routes, [])
+  assert.deepEqual(result.payload.discovery, { llmAvailable: true, providerCount: 2, failedProviders: ['deepseek'] })
+})
+
+test('GET /settings survives a discovery failure', async () => {
+  let settings = { ...DEFAULT_SETTINGS }
+  const handler = createRouteHandler({
+    ctx: stubContext(),
+    getSettings: () => settings,
+    setSettings: (next) => { settings = next; return settings },
+    listRoutes: () => { throw new Error('llm exploded') },
+  })
+  const result = await call(handler, 'GET', '/prompt-optimizer/settings')
+  assert.equal(result.status, 200)
+  assert.deepEqual(result.payload.routes, [])
+  assert.deepEqual(result.payload.discovery, { llmAvailable: false, providerCount: 0, failedProviders: [] })
 })
 
 test('GET /settings reports the parsed explicit route', async () => {

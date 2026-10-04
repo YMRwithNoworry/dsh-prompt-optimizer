@@ -41,6 +41,7 @@ export function buildConfigSchema(z) {
 
   return z.object({
     model: field(DEFAULT_SETTINGS.model, 'current = 复用当前会话模型；也可填 provider/model'),
+    reasoningEffort: field(DEFAULT_SETTINGS.reasoningEffort, '思考强度；留空 = 使用所选模型自己的默认值'),
     intensity: field(DEFAULT_SETTINGS.intensity, 'light | balanced | deep'),
     language: field(DEFAULT_SETTINGS.language, 'auto | chinese | english | original'),
     autoDetectDomain: z.boolean().default(DEFAULT_SETTINGS.autoDetectDomain).volatile().description('自动识别任务领域'),

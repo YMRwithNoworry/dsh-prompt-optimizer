@@ -81,10 +81,43 @@ export interface OptimizationPlan {
   noop: boolean
 }
 
+/** One adapter-owned reasoning effort, as the route advertises it. */
+export interface ReasoningEffortOption {
+  /** Opaque value passed through to the provider. */
+  id: string
+  /** Human-readable name for the selector. */
+  name: string
+  /** Optional user-facing distinction from similar efforts. */
+  description?: string
+}
+
+/** One provider/model route the optimizer can be pinned to. */
+export interface ModelRouteOption {
+  /** Registered provider route, e.g. `deepseek`. */
+  provider: string
+  /** Human-readable provider name. */
+  providerName: string
+  /** Provider-owned model id, e.g. `deepseek-chat`. */
+  model: string
+  /** Human-readable model name. */
+  modelName: string
+  /** `provider/model`, the exact value the setting stores. */
+  value: string
+  /** Selectable reasoning efforts for this exact route, in adapter order. */
+  efforts: readonly ReasoningEffortOption[]
+  /** The effort the adapter applies when the caller omits one. */
+  defaultEffort?: string
+}
+
 /** One persisted plugin setting. */
 export interface OptimizerSettings {
   /** `current` reuses the session's model; otherwise `provider/model`. */
   model: string
+  /**
+   * Adapter-owned reasoning effort for the optimizer call, or empty to use
+   * whatever the selected route does by default.
+   */
+  reasoningEffort: string
   intensity: Intensity
   language: LanguageMode
   autoDetectDomain: boolean

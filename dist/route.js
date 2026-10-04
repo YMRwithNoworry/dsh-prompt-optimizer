@@ -93,12 +93,28 @@ export async function readJsonBody(request) {
  * @param deps - route dependencies.
  * @returns the payload the settings panel renders.
  */
-function settingsPayload(deps) {
+async function settingsPayload(deps) {
+    // Discovery is best-effort: a composition without an LLM service, or an
+    // adapter that fails to enumerate, must still produce a usable panel.
+    let discovery = { routes: [], llmAvailable: false, providerCount: 0, failedProviders: [] };
+    try {
+        discovery = await deps.listRoutes();
+    }
+    catch {
+        discovery = { routes: [], llmAvailable: false, providerCount: 0, failedProviders: [] };
+    }
     return {
         settings: deps.getSettings(),
         defaults: DEFAULT_SETTINGS,
-        routes: deps.listRoutes(),
-        // The parser's verdict, so the panel can show whether the typed route is usable.
+        routes: discovery.routes,
+        // Enough context for the panel to explain an empty list instead of just
+        // showing nothing.
+        discovery: {
+            llmAvailable: discovery.llmAvailable,
+            providerCount: discovery.providerCount,
+            failedProviders: discovery.failedProviders,
+        },
+        // The parser's verdict, so the panel can show whether the stored route is usable.
         explicitRoute: parseModelRoute(deps.getSettings().model) ?? null,
     };
 }
@@ -176,7 +192,7 @@ export function createRouteHandler(deps) {
         try {
             if (path === `${ROUTE_PREFIX}/settings`) {
                 if (method === 'GET') {
-                    sendJson(response, 200, settingsPayload(deps));
+                    sendJson(response, 200, await settingsPayload(deps));
                     return;
                 }
                 if (method === 'POST') {
@@ -188,7 +204,8 @@ export function createRouteHandler(deps) {
                     const body = await readJsonBody(request);
                     const next = normalizeSettings(body?.settings);
                     const saved = deps.setSettings(next);
-                    sendJson(response, 200, { ok: true, ...settingsPayload(deps), settings: saved });
+                    const payload = await settingsPayload(deps);
+                    sendJson(response, 200, { ...payload, ok: true, settings: saved });
                     return;
                 }
                 response.writeHead(405, { allow: 'GET, POST' });
@@ -212,6 +229,7 @@ export function createRouteHandler(deps) {
                 return;
             }
             if (path === `${ROUTE_PREFIX}/health`) {
+                // Deliberately does no discovery: a liveness probe must stay cheap.
                 sendJson(response, 200, { ok: true, settings: deps.getSettings() });
                 return;
             }

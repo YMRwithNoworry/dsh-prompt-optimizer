@@ -1,9 +1,9 @@
 /**
- * Client-half tests.
+ * Client-half contract tests.
  *
  * The browser bundle is a plain module-loader registration, so it loads in Node
- * against a stub window, a stub React, and a stub fetch. That is enough to
- * assert the guarantees that matter most:
+ * against the shared React stand-in (see `helpers/react-stub.ts`) and a stub
+ * fetch. That is enough to assert the guarantees that matter most:
  *
  *   - the button is registered into conversation.input.right;
  *   - it is disabled with an empty draft and enabled with text;
@@ -14,241 +14,30 @@
  */
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-
-const here = dirname(fileURLToPath(import.meta.url))
-const CLIENT_SOURCE = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-/**
- * The bundle calls a bare `fetch`, which resolves lexically to the realm's
- * global — an injected globalThis cannot intercept it. So the global is
- * replaced once for the whole test process with a proxy that delegates to a
- * swappable slot. Each loadClient call installs its own stub there; mounting a
- * component later in the test still reaches it.
- */
-let fetchImpl = async () => { throw new Error('no fetch stub installed') }
-const nativeFetch = globalThis.fetch
-globalThis.fetch = (url, init) => fetchImpl(String(url).startsWith('/') ? 'http://localhost' + url : url, init)
-globalThis.location = { href: 'http://localhost/' }
+import {
+  CLIENT_SOURCE,
+  componentOf,
+  findNode,
+  findAll,
+  loadClient,
+  settle,
+  textOf,
+} from './helpers/react-stub.ts'
 
 /**
- * A minimal but honest React stand-in.
- *
- * Hooks persist per mounted component, so a setState really re-renders. That is
- * what lets a test drive the settings panel through its loading state and the
- * dialog through a request lifecycle.
+ * The dialog store is module-scoped inside the bundle and therefore shared by
+ * every loadClient call in this process, exactly as it is shared across the real
+ * composer. Each test starts from a clean store so one test's open dialog cannot
+ * leak into the next.
  */
-function makeReact() {
-  /** The hook store of the component currently rendering. */
-  let current = null
+let lastFace = null
+beforeEach(() => { if (lastFace !== null && typeof lastFace.resetState === 'function') lastFace.resetState() })
 
-  const react = {
-    createElement(type, props, ...children) {
-      const flat = children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false && c !== true)
-      return { type, props: props === null || props === undefined ? {} : props, children: flat }
-    },
-
-    useState(initial) {
-      const store = current
-      const index = store.cursor++
-      if (store.hooks.length <= index) {
-        store.hooks[index] = { value: typeof initial === 'function' ? initial() : initial }
-      }
-      const slot = store.hooks[index]
-      // The setter closes over its own store: a setState that lands after the
-      // render returned still knows which component to re-render.
-      const set = (next) => {
-        slot.value = typeof next === 'function' ? next(slot.value) : next
-        store.schedule()
-      }
-      return [slot.value, set]
-    },
-
-    useEffect(fn) {
-      const index = current.cursor++
-      if (current.hooks.length <= index) {
-        current.hooks[index] = { ran: true }
-        current.cleanups.push(fn() ?? (() => {}))
-      }
-    },
-
-    useCallback(fn) { current.cursor += 1; return fn },
-    useMemo(fn) { current.cursor += 1; return fn() },
-
-    useRef(initial) {
-      const index = current.cursor++
-      if (current.hooks.length <= index) current.hooks[index] = { current: initial }
-      return current.hooks[index]
-    },
-
-    /**
-     * Mount a component and return a handle whose \`tree\` reflects the latest
-     * render.
-     * @param component - the component function.
-     * @param props - its props.
-     */
-    /**
-     * Render function components the way React does, so a tree walk sees real
-     * elements rather than unresolved component references.
-     *
-     * Each child gets its own hook store, and the parent's cursor is saved and
-     * restored around the child's render — without that, a child's useMemo would
-     * advance the parent's cursor and every later hook in the parent would read
-     * the wrong slot.
-     *
-     * @param node - the node to expand.
-     */
-    __expand(node) {
-      if (node === null || node === undefined || typeof node !== 'object') return node
-      if (Array.isArray(node)) return node.map((child) => react.__expand(child)).flat(Infinity).filter((c) => c !== null && c !== undefined)
-      if (typeof node.type === 'function') {
-        const parent = current
-        const savedCursor = parent === null ? 0 : parent.cursor
-        const childStore = { hooks: [], cursor: 0, cleanups: [], props: node.props, tree: null, alive: true, schedule() {} }
-        current = childStore
-        let rendered
-        try {
-          rendered = node.type(node.props)
-        } finally {
-          current = parent
-          if (parent !== null) parent.cursor = savedCursor
-        }
-        return react.__expand(rendered)
-      }
-      const expandedChildren = (node.children ?? []).map((child) => react.__expand(child)).flat(Infinity).filter((c) => c !== null && c !== undefined)
-      // Preserve an absent children field: a component that branches on
-      // `props.children !== undefined` must still see undefined, exactly as React
-      // leaves it when no child was passed.
-      const next = { ...node }
-      if (expandedChildren.length > 0 || Object.prototype.hasOwnProperty.call(node, 'children')) {
-        next.children = expandedChildren
-      } else {
-        delete next.children
-      }
-      return next
-    },
-
-    __mount(component, props) {
-      const store = {
-        hooks: [],
-        cursor: 0,
-        cleanups: [],
-        props,
-        tree: null,
-        alive: true,
-        render() {
-          if (!store.alive) return store.tree
-          store.cursor = 0
-          const previous = current
-          current = store
-          try {
-            store.tree = react.__expand(component(store.props))
-          } finally {
-            current = previous
-          }
-          return store.tree
-        },
-        // Coalesce the many synchronous setState calls one render can make.
-        schedule() {
-          if (store.pending) return
-          store.pending = true
-          queueMicrotask(() => {
-            store.pending = false
-            store.render()
-          })
-        },
-        unmount() {
-          store.alive = false
-          for (const cleanup of store.cleanups) if (typeof cleanup === 'function') cleanup()
-        },
-      }
-      store.render()
-      return store
-    },
-  }
-  return react
-}
-
-/**
- * Load the client bundle against stubs.
- *
- * @param options - fetch stub and React stub.
- * @returns the registered plugin face plus captured slot registrations.
- */
-function loadClient(options = {}) {
-  const react = options.react ?? makeReact()
-  const registrations = []
-  const injections = []
-  let face = null
-
-  const moduleLoader = {
-    load({ id, factory }) {
-      face = factory((specifier) => {
-        if (specifier === 'react') return react
-        throw new Error('unexpected require: ' + specifier)
-      })
-      face.__id = id
-    },
-  }
-
-  const windowStub = {
-    __ModuleLoader__: moduleLoader,
-    crypto: { getRandomValues: (array) => { for (let i = 0; i < array.length; i += 1) array[i] = i + 1; return array } },
-  }
-  const documentStub = {
-    querySelector: () => null,
-    createElement: () => ({ dataset: {}, textContent: '' }),
-    head: { appendChild: () => {} },
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    activeElement: null,
-  }
-
-  // Install this test's stub into the process-wide slot.
-  fetchImpl = options.fetch ?? (async () => { throw new Error('no fetch stub') })
-
-  const globalScope = { window: windowStub, document: documentStub, crypto: windowStub.crypto, location: { href: 'http://localhost/' } }
-  const run = new Function('window', 'document', 'globalThis', CLIENT_SOURCE + '\n//# sourceURL=dsh-prompt-optimizer-client.js')
-  run.call(globalScope, windowStub, documentStub, globalScope)
-
-  const ctx = {
-    slots: {
-      inject(key, callback) { injections.push(key); callback() },
-      register(spec, component) { registrations.push({ spec, component }); return () => {} },
-    },
-  }
-  face.apply(ctx)
-  lastFace = face
-  return { face, registrations, injections, react }
-}
-
-/** Depth-first search for the first node whose props satisfy a predicate. */
-function findNode(node, predicate) {
-  if (node === null || typeof node !== 'object') return null
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const found = findNode(child, predicate)
-      if (found !== null) return found
-    }
-    return null
-  }
-  if (node.props !== undefined && predicate(node)) return node
-  for (const child of node.children ?? []) {
-    const found = findNode(child, predicate)
-    if (found !== null) return found
-  }
-  return null
-}
-
-/** Collect every node matching a predicate. */
-function findAll(node, predicate, out = []) {
-  if (node === null || typeof node !== 'object') return out
-  if (Array.isArray(node)) { for (const child of node) findAll(child, predicate, out); return out }
-  if (node.props !== undefined && predicate(node)) out.push(node)
-  for (const child of node.children ?? []) findAll(child, predicate, out)
-  return out
+/** Load the bundle and remember its face for the next test's reset. */
+function load(options) {
+  const loaded = loadClient(options)
+  lastFace = loaded.face
+  return loaded
 }
 
 /** Build the standard props a session-scoped slot occupant receives. */
@@ -262,24 +51,6 @@ function slotProps(overrides = {}) {
     locked: overrides.locked ?? false,
     ...overrides.props,
   }
-}
-
-/** Let queued microtasks (state updates, fetch promises) settle. */
-function settle() { return new Promise((resolve) => setTimeout(resolve, 20)) }
-
-/**
- * The dialog store is module-scoped and therefore shared by every loadClient in
- * this process, exactly as it is shared across the real composer. Each test
- * starts from a clean store so one test's open dialog cannot leak into the next.
- */
-let lastFace = null
-beforeEach(() => { if (lastFace !== null && typeof lastFace.resetState === 'function') lastFace.resetState() })
-
-/** Look up a registered slot component by slot name. */
-function componentOf(registrations, slotName) {
-  const entry = registrations.find((r) => r.spec.name === slotName)
-  assert.ok(entry !== undefined, 'no registration for ' + slotName)
-  return entry.component
 }
 
 // --- registration ---------------------------------------------------------
@@ -403,7 +174,7 @@ test('clicking with an empty draft issues no request and calls no action', async
     submit: () => { calls += 1 },
     captureInsertion: () => ({ from: 0, to: 0, rev: 1 }),
   }
-  const { registrations, react } = loadClient({ fetch: async () => { calls += 1; return { ok: true, json: async () => ({}) } } })
+  const { registrations, react } = load({ fetch: async () => { calls += 1; return { ok: true, json: async () => ({}) } } })
   const tree = react.__mount(componentOf(registrations, 'conversation.input.right'), slotProps({ draft: '', inputActions })).tree
   await findNode(tree, (n) => n.type === 'button').props.onClick()
   await settle()
@@ -416,7 +187,7 @@ test('clicking with text issues exactly one optimize request', async () => {
     requests.push({ url, options })
     return { ok: true, json: async () => ({ requestId: 'x', optimized: 'OPT', original: 'orig', plan: { domainId: 'general', domainLabel: 'General', complexity: 'simple', intensity: 'balanced', language: 'auto', noop: false, ranked: [], sections: [], reasons: [] } }) }
   }
-  const { registrations, react } = loadClient({ fetch: fetchStub })
+  const { registrations, react } = load({ fetch: fetchStub })
   const tree = react.__mount(componentOf(registrations, 'conversation.input.right'), slotProps({ draft: '帮我做个后台' })).tree
   await findNode(tree, (n) => n.type === 'button').props.onClick()
   await settle()
@@ -475,7 +246,7 @@ test('the dialog offers cancel, regenerate, and apply', async () => {
   await findNode(buttonTree, (n) => n.type === 'button').props.onClick()
   await settle()
   const labels = findAll(react.__mount(componentOf(registrations, 'conversation.input.overlay'), {}).tree, (n) => n.type === 'button')
-    .map((n) => String(n.children[0] ?? ''))
+    .map((n) => String(n.props.children?.[0] ?? ''))
   assert.ok(labels.includes('取消'))
   assert.ok(labels.includes('重新优化'))
   assert.ok(labels.includes('采用优化结果'))
@@ -510,7 +281,7 @@ test('a failure shows an error and preserves the original text', async () => {
 })
 
 test('a network failure is reported, not thrown', async () => {
-  const { registrations, react } = loadClient({ fetch: async () => { throw new Error('offline') } })
+  const { registrations, react } = load({ fetch: async () => { throw new Error('offline') } })
   const buttonTree = react.__mount(componentOf(registrations, 'conversation.input.right'), slotProps({ draft: 'text' })).tree
   await findNode(buttonTree, (n) => n.type === 'button').props.onClick()
   await settle()
@@ -518,7 +289,7 @@ test('a network failure is reported, not thrown', async () => {
 })
 
 test('an HTTP error status is reported', async () => {
-  const { registrations, react } = loadClient({ fetch: async () => ({ ok: false, status: 500, json: async () => ({}) }) })
+  const { registrations, react } = load({ fetch: async () => ({ ok: false, status: 500, json: async () => ({}) }) })
   const buttonTree = react.__mount(componentOf(registrations, 'conversation.input.right'), slotProps({ draft: 'text' })).tree
   await findNode(buttonTree, (n) => n.type === 'button').props.onClick()
   await settle()
@@ -538,7 +309,7 @@ test('a stale reply cannot overwrite a newer request', async () => {
       }) })
     })
   }
-  const { registrations, react } = loadClient({ fetch: fetchStub })
+  const { registrations, react } = load({ fetch: fetchStub })
 
   const first = react.__mount(componentOf(registrations, 'conversation.input.right'), slotProps({ draft: 'first' })).tree
   await findNode(first, (n) => n.type === 'button').props.onClick()
@@ -563,40 +334,42 @@ test('a stale reply cannot overwrite a newer request', async () => {
 
 /** The settings payload the panel loads. */
 const SETTINGS_PAYLOAD = {
-  settings: { model: 'current', intensity: 'balanced', language: 'auto', autoDetectDomain: true, showPreview: true, useConversationContext: true, useProjectContext: true, minecraftOptimization: true, enableVisionContext: true, customInstructions: '' },
-  routes: [{ provider: 'deepseek', models: ['deepseek-chat'] }],
+  settings: { model: 'current', reasoningEffort: '', intensity: 'balanced', language: 'auto', autoDetectDomain: true, showPreview: true, useConversationContext: true, useProjectContext: true, minecraftOptimization: true, enableVisionContext: true, customInstructions: '' },
+  routes: [{ provider: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-chat', modelName: 'DeepSeek Chat', value: 'deepseek/deepseek-chat', efforts: [] }],
 }
 
 test('the settings section renders every documented control', async () => {
-  const { registrations, react } = loadClient({ fetch: async () => ({ ok: true, json: async () => SETTINGS_PAYLOAD }) })
+  const { registrations, react } = load({ fetch: async () => ({ ok: true, json: async () => SETTINGS_PAYLOAD }) })
   const mounted = react.__mount(componentOf(registrations, 'settings.section'), {})
   await settle()
   const tree = mounted.tree
   assert.equal(findAll(tree, (n) => n.type === 'input' && n.props.type === 'checkbox').length, 6)
   assert.equal(findAll(tree, (n) => n.type === 'textarea').length, 1)
-  assert.equal(findAll(tree, (n) => n.type === 'input' && n.props.list === 'dshpo-routes').length, 1)
-  assert.equal(findAll(tree, (n) => n.type === 'datalist').length, 1)
+  // The model control is a real <select> fed by host discovery, not a
+  // free-text input with a datalist.
+  assert.ok(findAll(tree, (n) => n.type === 'select').length >= 1)
+  assert.ok(findAll(tree, (n) => n.type === 'option').length >= 1)
 })
 
 test('the settings section offers all three intensities and four languages', async () => {
-  const { registrations, react } = loadClient({ fetch: async () => ({ ok: true, json: async () => SETTINGS_PAYLOAD }) })
+  const { registrations, react } = load({ fetch: async () => ({ ok: true, json: async () => SETTINGS_PAYLOAD }) })
   const mounted = react.__mount(componentOf(registrations, 'settings.section'), {})
   await settle()
-  const labels = findAll(mounted.tree, (n) => n.type === 'button').map((n) => String(n.children[0] ?? ''))
+  const labels = findAll(mounted.tree, (n) => n.type === 'button').map((n) => String(n.props.children?.[0] ?? ''))
   for (const label of ['Light', 'Balanced', 'Deep', 'Auto', '中文', 'English', '原文语言']) {
     assert.ok(labels.includes(label), 'missing option: ' + label)
   }
 })
 
 test('the settings panel reports a load failure instead of crashing', async () => {
-  const { registrations, react } = loadClient({ fetch: async () => { throw new Error('boom') } })
+  const { registrations, react } = load({ fetch: async () => { throw new Error('boom') } })
   const mounted = react.__mount(componentOf(registrations, 'settings.section'), {})
   await settle()
   assert.ok(JSON.stringify(mounted.tree).includes('读取失败'))
 })
 
 test('the settings panel shows the loading state before the fetch settles', () => {
-  const { registrations, react } = loadClient({ fetch: () => new Promise(() => {}) })
+  const { registrations, react } = load({ fetch: () => new Promise(() => {}) })
   const mounted = react.__mount(componentOf(registrations, 'settings.section'), {})
   assert.ok(JSON.stringify(mounted.tree).includes('加载中'))
 })
@@ -618,7 +391,7 @@ test('the settings panel saves and reports success', async () => {
   const checkbox = findAll(mounted.tree, (n) => n.type === 'input' && n.props.type === 'checkbox')[0]
   checkbox.props.onChange({ target: { checked: false } })
   await settle()
-  const saveButton = findAll(mounted.tree, (n) => n.type === 'button' && n.children[0] === '保存')[0]
+  const saveButton = findAll(mounted.tree, (n) => n.type === 'button' && n.props.children?.[0] === '保存')[0]
   assert.ok(saveButton !== undefined, 'save button must exist')
   assert.equal(saveButton.props.disabled, false, 'save must enable once dirty')
   saveButton.props.onClick()

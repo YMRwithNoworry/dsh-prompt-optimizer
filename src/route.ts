@@ -19,12 +19,13 @@
  * @module dsh-prompt-optimizer/route
  */
 
-import type { OptimizeRequest, OptimizerSettings } from './shared/types.ts'
+import type { ModelRouteOption, OptimizeRequest, OptimizerSettings } from './shared/types.ts'
 import { DEFAULT_SETTINGS, normalizeSettings, parseModelRoute, readSettings, writeSettings } from './settings.ts'
 import { optimize } from './optimizer/optimizer.ts'
 import { OptimizeError } from './optimizer/provider.ts'
 import { trimConversation } from './context/conversation.ts'
 import { readProjectRules } from './context/project.ts'
+import type { DiscoveryResult } from './optimizer/model-routes.ts'
 
 /** Route prefix owned by this plugin. */
 export const ROUTE_PREFIX = '/prompt-optimizer'
@@ -100,8 +101,14 @@ export interface RouteDeps {
   setSettings(next: OptimizerSettings): OptimizerSettings
   /** The plugin context, for the LLM call. */
   ctx: any
-  /** Available provider/model routes, for the settings panel. */
-  listRoutes(): { provider: string; models: string[] }[]
+  /**
+   * Available provider/model routes with their reasoning efforts.
+   *
+   * Discovered from the harness LLM service on demand rather than cached: a
+   * provider can be added, removed, or reconfigured between two reads of the
+   * settings panel, and a stale list is worse than a slow one.
+   */
+  listRoutes(): Promise<DiscoveryResult>
 }
 
 /**
@@ -109,12 +116,27 @@ export interface RouteDeps {
  * @param deps - route dependencies.
  * @returns the payload the settings panel renders.
  */
-function settingsPayload(deps: RouteDeps): unknown {
+async function settingsPayload(deps: RouteDeps): Promise<unknown> {
+  // Discovery is best-effort: a composition without an LLM service, or an
+  // adapter that fails to enumerate, must still produce a usable panel.
+  let discovery: DiscoveryResult = { routes: [], llmAvailable: false, providerCount: 0, failedProviders: [] }
+  try {
+    discovery = await deps.listRoutes()
+  } catch {
+    discovery = { routes: [], llmAvailable: false, providerCount: 0, failedProviders: [] }
+  }
   return {
     settings: deps.getSettings(),
     defaults: DEFAULT_SETTINGS,
-    routes: deps.listRoutes(),
-    // The parser's verdict, so the panel can show whether the typed route is usable.
+    routes: discovery.routes,
+    // Enough context for the panel to explain an empty list instead of just
+    // showing nothing.
+    discovery: {
+      llmAvailable: discovery.llmAvailable,
+      providerCount: discovery.providerCount,
+      failedProviders: discovery.failedProviders,
+    },
+    // The parser's verdict, so the panel can show whether the stored route is usable.
     explicitRoute: parseModelRoute(deps.getSettings().model) ?? null,
   }
 }
@@ -196,7 +218,7 @@ export function createRouteHandler(deps: RouteDeps) {
     try {
       if (path === `${ROUTE_PREFIX}/settings`) {
         if (method === 'GET') {
-          sendJson(response, 200, settingsPayload(deps))
+          sendJson(response, 200, await settingsPayload(deps))
           return
         }
         if (method === 'POST') {
@@ -204,7 +226,8 @@ export function createRouteHandler(deps: RouteDeps) {
           const body = await readJsonBody(request) as { settings?: unknown }
           const next = normalizeSettings(body?.settings)
           const saved = deps.setSettings(next)
-          sendJson(response, 200, { ok: true, ...(settingsPayload(deps) as object), settings: saved })
+          const payload = await settingsPayload(deps) as Record<string, unknown>
+          sendJson(response, 200, { ...payload, ok: true, settings: saved })
           return
         }
         response.writeHead(405, { allow: 'GET, POST' })
@@ -226,6 +249,7 @@ export function createRouteHandler(deps: RouteDeps) {
       }
 
       if (path === `${ROUTE_PREFIX}/health`) {
+        // Deliberately does no discovery: a liveness probe must stay cheap.
         sendJson(response, 200, { ok: true, settings: deps.getSettings() })
         return
       }

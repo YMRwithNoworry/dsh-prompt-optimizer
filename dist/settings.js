@@ -16,6 +16,9 @@ export const DEFAULT_SETTINGS = {
     // "current" reuses whatever model the session is already talking to, so the
     // plugin never forces the user to configure a second credential.
     model: 'current',
+    // Empty means "whatever the selected route does by default". Most providers
+    // expose no efforts at all, so pinning one must never be required.
+    reasoningEffort: '',
     intensity: 'balanced',
     language: 'auto',
     autoDetectDomain: true,
@@ -55,6 +58,7 @@ export function normalizeSettings(raw) {
     const language = str(value.language, DEFAULT_SETTINGS.language);
     return {
         model: cap(str(value.model, DEFAULT_SETTINGS.model).trim(), 200) || 'current',
+        reasoningEffort: cap(str(value.reasoningEffort, DEFAULT_SETTINGS.reasoningEffort).trim(), 100),
         intensity: INTENSITIES.includes(intensity) ? intensity : DEFAULT_SETTINGS.intensity,
         language: LANGUAGES.includes(language) ? language : DEFAULT_SETTINGS.language,
         autoDetectDomain: bool(value.autoDetectDomain, DEFAULT_SETTINGS.autoDetectDomain),

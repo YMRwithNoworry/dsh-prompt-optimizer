@@ -9,126 +9,22 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import {
+  componentOf,
+  findAll,
+  findNode,
+  loadClient,
+  settle as SETTLE,
+  textOf,
+} from './helpers/react-stub.ts'
 
-const here = dirname(fileURLToPath(import.meta.url))
-const CLIENT_SOURCE = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-let fetchImpl = async () => { throw new Error('no fetch stub installed') }
-globalThis.fetch = (url, init) => fetchImpl(String(url).startsWith('/') ? 'http://localhost' + url : url, init)
-globalThis.location = { href: 'http://localhost/' }
-
-/** A minimal React stand-in with real re-rendering; mirrors client.test.ts. */
-function makeReact() {
-  let current = null
-  const react = {
-    createElement(type, props, ...children) {
-      const flat = children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false && c !== true)
-      // React puts children in props; components branch on props.children, so a
-      // mock that keeps them only on the element cannot render such a component.
-      const base = props === null || props === undefined ? {} : { ...props }
-      if (flat.length > 0) base.children = flat
-      return { type, props: base }
-    },
-    useState(initial) {
-      const store = current
-      const index = store.cursor++
-      if (store.hooks.length <= index) store.hooks[index] = { value: typeof initial === 'function' ? initial() : initial }
-      const slot = store.hooks[index]
-      return [slot.value, (next) => {
-        slot.value = typeof next === 'function' ? next(slot.value) : next
-        store.schedule()
-      }]
-    },
-    useEffect(fn) {
-      const store = current
-      const index = store.cursor++
-      if (store.hooks.length <= index) { store.hooks[index] = { ran: true }; store.cleanups.push(fn() ?? (() => {})) }
-    },
-    useCallback(fn) { current.cursor += 1; return fn },
-    useMemo(fn) { current.cursor += 1; return fn() },
-    useRef(initial) { const store = current; const index = store.cursor++; if (store.hooks.length <= index) store.hooks[index] = { current: initial }; return store.hooks[index] },
-    __expand(node) {
-      if (node === null || node === undefined || typeof node !== 'object') return node
-      if (Array.isArray(node)) return node.map((c) => react.__expand(c)).flat(Infinity).filter((c) => c !== null && c !== undefined)
-      if (typeof node.type === 'function') {
-        const parent = current
-        const saved = parent === null ? 0 : parent.cursor
-        const childStore = { hooks: [], cursor: 0, cleanups: [], props: node.props, tree: null, alive: true, schedule() {} }
-        current = childStore
-        let rendered
-        try { rendered = node.type(node.props) } finally { current = parent; if (parent !== null) parent.cursor = saved }
-        return react.__expand(rendered)
-      }
-      const raw = node.props?.children ?? []
-      const kids = raw.map((c) => react.__expand(c)).flat(Infinity).filter((c) => c !== null && c !== undefined)
-      const nextProps = { ...node.props }
-      // An empty children is removed rather than kept as []: a component that
-      // branches on `props.children !== undefined` must see undefined when
-      // nothing survived expansion, exactly as React leaves it.
-      if (kids.length > 0) nextProps.children = kids
-      else delete nextProps.children
-      return { type: node.type, props: nextProps }
-    },
-    __mount(component, props) {
-      const store = {
-        hooks: [], cursor: 0, cleanups: [], props, tree: null, alive: true,
-        render() {
-          if (!store.alive) return store.tree
-          store.cursor = 0
-          const previous = current
-          current = store
-          try { store.tree = react.__expand(component(store.props)) } finally { current = previous }
-          return store.tree
-        },
-        schedule() { if (store.pending) return; store.pending = true; queueMicrotask(() => { store.pending = false; store.render() }) },
-      }
-      store.render()
-      return store
-    },
-  }
-  return react
-}
-
-/** Load the bundle against stubs and return the registered components. */
-function loadClient(fetchStub) {
-  fetchImpl = fetchStub ?? (async () => { throw new Error('no stub') })
-  const react = makeReact()
-  const registrations = []
-  let face = null
-  const windowStub = {
-    __ModuleLoader__: { load({ id, factory }) { face = factory((s) => { if (s === 'react') return react; throw new Error('unexpected require: ' + s) }); face.__id = id } },
-    crypto: { getRandomValues: (a) => { for (let i = 0; i < a.length; i += 1) a[i] = i + 1; return a } },
-  }
-  const documentStub = { querySelector: () => null, createElement: () => ({ dataset: {}, textContent: '' }), head: { appendChild: () => {} }, addEventListener: () => {}, removeEventListener: () => {}, activeElement: null }
-  const scope = { window: windowStub, document: documentStub, location: { href: 'http://localhost/' } }
-  new Function('window', 'document', 'globalThis', CLIENT_SOURCE).call(scope, windowStub, documentStub, scope)
-  face.apply({ slots: { inject: (k, cb) => cb(), register: (spec, component) => { registrations.push({ spec, component }); return () => {} } } })
-  return { react, registrations, face }
-}
-
-/** Every text node in a rendered tree, flattened. */
-function textOf(node, out = []) {
-  // Strings first: a text child is not an object, so the guard below would
-  // discard it before the string branch could run.
-  if (typeof node === 'string') { out.push(node); return out }
-  if (node === null || node === undefined || typeof node !== 'object') return out
-  if (Array.isArray(node)) { for (const c of node) textOf(c, out); return out }
-  for (const c of node.props?.children ?? []) textOf(c, out)
-  return out
-}
-
-const SETTLE = () => new Promise((resolve) => setTimeout(resolve, 20))
-
-/** Standard props for the composer button. */
+/** Mount the composer button with the standard session props. */
 function buttonProps(draft, overrides = {}) {
-  const state = { draft, draftRev: 1, phase: 'plain', attachmentIds: [], occurrences: [], queue: [] }
+  const state = { draft, draftRev: 1, phase: "plain", attachmentIds: [], occurrences: [], queue: [] }
   return {
     useInput: (selector) => selector(state),
     inputActions: overrides.inputActions ?? { setDraft: () => {}, submit: () => {}, captureInsertion: () => ({ rev: 1 }) },
-    session: { id: 's1' },
+    session: { id: "s1" },
     locked: overrides.locked ?? false,
   }
 }
@@ -136,32 +32,30 @@ function buttonProps(draft, overrides = {}) {
 /**
  * Open the dialog with a canned response.
  *
- * Returns the mounted handle rather than its tree: the mock replaces
- * `instance.tree` on every render, so a snapshot taken here would be stale
+ * Returns the mounted handle rather than its tree: the stub replaces
+ * `handle.tree` on every render, so a snapshot taken here would be stale
  * after any interaction. Read `handle.tree` after each step.
  */
-async function openDialog(response, draft = '做个后台') {
-  const { react, registrations } = loadClient(async () => ({ ok: true, json: async () => response }))
-  const button = registrations.find((r) => r.spec.name === 'conversation.input.right').component
+async function openDialog(response, draft = "做个后台") {
+  const { react, registrations } = loadClient({ fetch: async () => ({ ok: true, json: async () => response }) })
+  const button = componentOf(registrations, "conversation.input.right")
   const mounted = react.__mount(button, buttonProps(draft))
   await mounted.tree.props.onClick()
   await SETTLE()
-  const dialog = registrations.find((r) => r.spec.name === 'conversation.input.overlay').component
+  const dialog = componentOf(registrations, "conversation.input.overlay")
   return { react, dialog: react.__mount(dialog, {}), registrations }
 }
 
 /** A well-formed success payload. */
 function payload(overrides = {}) {
   return {
-    requestId: 'r1',
-    optimized: '# Objective\n\n做一个管理后台。',
-    original: '做个后台',
-    plan: { domainId: 'ui-design', domainLabel: 'UI / UX / Product Design', complexity: 'moderate', intensity: 'balanced', language: 'auto', noop: false, ranked: [], sections: ['Objective', 'Requirements'], reasons: ['scope words: 1'] },
+    requestId: "r1",
+    optimized: "# Objective\n\n做一个管理后台。",
+    original: "做个后台",
+    plan: { domainId: "ui-design", domainLabel: "UI / UX / Product Design", complexity: "moderate", intensity: "balanced", language: "auto", noop: false, ranked: [], sections: ["Objective", "Requirements"], reasons: ["scope words: 1"] },
     ...overrides,
   }
 }
-
-// --- button rendering -----------------------------------------------------
 
 test('the idle button shows the sparkle and the label', () => {
   const { react, registrations } = loadClient()
@@ -225,7 +119,7 @@ test('an unknown error code still produces readable copy', async () => {
 })
 
 test('the loading state names what is happening', async () => {
-  const { react, registrations } = loadClient(() => new Promise(() => {}))
+  const { react, registrations } = loadClient({ fetch: () => new Promise(() => {}) })
   const button = registrations.find((r) => r.spec.name === 'conversation.input.right').component
   const mounted = react.__mount(button, buttonProps('做个后台'))
   await mounted.tree.props.onClick()
@@ -298,67 +192,157 @@ test('an identical original and optimized produce an empty diff', async () => {
 
 // --- settings rendering ---------------------------------------------------
 
+/** Base settings for the settings-panel tests. */
+const BASE = { model: 'current', reasoningEffort: '', intensity: 'balanced', language: 'auto', autoDetectDomain: true, showPreview: true, useConversationContext: true, useProjectContext: true, minecraftOptimization: true, enableVisionContext: true, customInstructions: '' }
+
+/** Two models, only one of which advertises reasoning efforts. */
+const ROUTES_PAYLOAD = {
+  settings: BASE,
+  routes: [
+    { provider: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-chat', modelName: 'DeepSeek Chat', value: 'deepseek/deepseek-chat', efforts: [] },
+    { provider: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-reasoner', modelName: 'DeepSeek Reasoner', value: 'deepseek/deepseek-reasoner', efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'high' },
+  ],
+}
+
+/**
+ * Mount the settings section with a given payload.
+ *
+ * @param payload - the settings document the host would return.
+ * @param onSave - receives the POSTed body when the panel saves.
+ */
+async function mountSettings(payload, onSave) {
+  const { react, registrations } = loadClient({
+    fetch: async (url, init) => {
+      if (init?.method === 'POST') {
+        const body = JSON.parse(init.body)
+        if (onSave !== undefined) onSave(body)
+        return { ok: true, json: async () => ({ ok: true, ...payload, settings: body.settings }) }
+      }
+      return { ok: true, json: async () => payload }
+    },
+  })
+  const mounted = react.__mount(componentOf(registrations, 'settings.section'), {})
+  await SETTLE()
+  return mounted
+}
+
+/** Every select in the rendered tree, in document order. */
+function selectsOf(mounted) {
+  return findAll(mounted.tree, (node) => node.type === 'select')
+}
+
+/** Option values of the nth select, or null when it does not exist. */
+function optionValues(mounted, index) {
+  const select = selectsOf(mounted)[index]
+  if (select === undefined) return null
+  return findAll(select, (node) => node.type === 'option').map((node) => node.props.value)
+}
+
+/** Click a settings button by its label. */
+function clickButton(mounted, label) {
+  const button = findNode(mounted.tree, (node) => node.type === 'button' && node.props?.children?.[0] === label)
+  assert.ok(button !== null, 'no button labelled ' + label)
+  button.props.onClick()
+}
+
 test('every settings row carries a label and a hint', async () => {
-  const { react, registrations } = loadClient(async () => ({
-    ok: true,
-    json: async () => ({
-      settings: { model: 'current', intensity: 'balanced', language: 'auto', autoDetectDomain: true, showPreview: true, useConversationContext: true, useProjectContext: true, minecraftOptimization: true, enableVisionContext: true, customInstructions: '' },
-      routes: [{ provider: 'deepseek', models: ['deepseek-chat'] }],
-    }),
-  }))
-  const section = registrations.find((r) => r.spec.name === 'settings.section').component
-  const mounted = react.__mount(section, {})
-  await SETTLE()
+  const mounted = await mountSettings(ROUTES_PAYLOAD)
   const text = textOf(mounted.tree).join('|')
-  for (const label of ['优化模型', '优化强度', '优化语言', '自动识别领域', '优化后先预览', '参考会话上下文', '参考项目规则', 'Minecraft 专项优化', '视觉上下文', '自定义优化规则']) {
-    assert.ok(text.includes(label), 'missing settings label: ' + label)
-  }
+  const labels = ['优化模型', '优化强度', '优化语言', '自动识别领域', '优化后先预览', '参考会话上下文', '参考项目规则', 'Minecraft 专项优化', '视觉上下文', '自定义优化规则']
+  for (const label of labels) assert.ok(text.includes(label), 'missing settings label: ' + label)
 })
 
-test('the discovered model routes are offered as datalist options', async () => {
-  const { react, registrations } = loadClient(async () => ({
-    ok: true,
-    json: async () => ({
-      settings: { model: 'current', intensity: 'balanced', language: 'auto', autoDetectDomain: true, showPreview: true, useConversationContext: true, useProjectContext: true, minecraftOptimization: true, enableVisionContext: true, customInstructions: '' },
-      routes: [{ provider: 'deepseek', models: ['deepseek-chat', 'deepseek-reasoner'] }],
-    }),
-  }))
-  const section = registrations.find((r) => r.spec.name === 'settings.section').component
-  const mounted = react.__mount(section, {})
-  await SETTLE()
-  const options = []
-  const walk = (node) => {
-    if (node === null || typeof node !== 'object') return
-    if (Array.isArray(node)) { node.forEach(walk); return }
-    if (node.type === 'option') options.push(node.props.value)
-    for (const c of node.props?.children ?? []) walk(c)
-  }
-  walk(mounted.tree)
-  assert.deepEqual(options.sort(), ['deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'])
+test('the model control offers current plus every discovered route', async () => {
+  const mounted = await mountSettings(ROUTES_PAYLOAD)
+  assert.deepEqual(optionValues(mounted, 0), ['current', 'deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'])
 })
 
-test('the save button is disabled until something changes', async () => {
-  const { react, registrations } = loadClient(async () => ({
-    ok: true,
-    json: async () => ({
-      settings: { model: 'current', intensity: 'balanced', language: 'auto', autoDetectDomain: true, showPreview: true, useConversationContext: true, useProjectContext: true, minecraftOptimization: true, enableVisionContext: true, customInstructions: '' },
-      routes: [],
-    }),
-  }))
-  const section = registrations.find((r) => r.spec.name === 'settings.section').component
-  const mounted = react.__mount(section, {})
+test('the model option labels name the provider and the model', async () => {
+  const mounted = await mountSettings(ROUTES_PAYLOAD)
+  const labels = JSON.stringify(mounted.tree)
+  assert.ok(labels.includes('DeepSeek · DeepSeek Chat'))
+  assert.ok(labels.includes('DeepSeek · DeepSeek Reasoner'))
+})
+
+test('a route whose model id differs from its name shows both', async () => {
+  const mounted = await mountSettings({
+    settings: BASE,
+    routes: [{ provider: 'op', providerName: 'OpenAI', model: 'gpt-x-2026', modelName: 'GPT-X', value: 'op/gpt-x-2026', efforts: [] }],
+  })
+  assert.ok(JSON.stringify(mounted.tree).includes('OpenAI · GPT-X (gpt-x-2026)'))
+})
+
+test('a hand-written route outside the catalog stays selectable', async () => {
+  const mounted = await mountSettings({ settings: { ...BASE, model: 'custom/not-listed' }, routes: ROUTES_PAYLOAD.routes })
+  assert.ok(optionValues(mounted, 0).includes('custom/not-listed'), 'the stored value must not be dropped')
+  assert.ok(JSON.stringify(mounted.tree).includes('自定义路由'))
+})
+
+test('no effort control appears for a route that advertises none', async () => {
+  const mounted = await mountSettings({ settings: { ...BASE, model: 'deepseek/deepseek-chat' }, routes: ROUTES_PAYLOAD.routes })
+  assert.equal(optionValues(mounted, 1), null, 'only the model select must exist')
+})
+
+test('the effort control appears for a route that advertises efforts', async () => {
+  const mounted = await mountSettings({ settings: { ...BASE, model: 'deepseek/deepseek-reasoner' }, routes: ROUTES_PAYLOAD.routes })
+  assert.deepEqual(optionValues(mounted, 1), ['', 'low', 'high'])
+})
+
+test('the effort control names the route default instead of showing an id', async () => {
+  const mounted = await mountSettings({ settings: { ...BASE, model: 'deepseek/deepseek-reasoner' }, routes: ROUTES_PAYLOAD.routes })
+  assert.ok(textOf(mounted.tree).join('|').includes('默认（High）'))
+})
+
+test('changing to a route without efforts clears the stale effort', async () => {
+  let saved = null
+  const mounted = await mountSettings(
+    { settings: { ...BASE, model: 'deepseek/deepseek-reasoner', reasoningEffort: 'low' }, routes: ROUTES_PAYLOAD.routes },
+    (body) => { saved = body },
+  )
+  selectsOf(mounted)[0].props.onChange({ target: { value: 'deepseek/deepseek-chat' } })
   await SETTLE()
-  const findButton = (label) => {
-    let found = null
-    const walk = (node) => {
-      if (found !== null || node === null || typeof node !== 'object') return
-      if (Array.isArray(node)) { node.forEach(walk); return }
-      if (node.type === 'button' && node.props?.children?.[0] === label) { found = node; return }
-      for (const c of node.props?.children ?? []) walk(c)
-    }
-    walk(mounted.tree)
-    return found
-  }
-  assert.equal(findButton('保存').props.disabled, true, 'save must start disabled on a clean form')
-  assert.equal(findButton('重新读取').props.disabled, false, 'reload is always available')
+  clickButton(mounted, '保存')
+  await SETTLE()
+  assert.equal(saved.settings.model, 'deepseek/deepseek-chat')
+  assert.equal(saved.settings.reasoningEffort, '', 'an effort the new route lacks must be cleared')
+})
+
+test('an effort both routes offer survives a route change', async () => {
+  let saved = null
+  const routes = [...ROUTES_PAYLOAD.routes, { provider: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-r2', modelName: 'R2', value: 'deepseek/deepseek-r2', efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] }]
+  const mounted = await mountSettings(
+    { settings: { ...BASE, model: 'deepseek/deepseek-reasoner', reasoningEffort: 'low' }, routes },
+    (body) => { saved = body },
+  )
+  selectsOf(mounted)[0].props.onChange({ target: { value: 'deepseek/deepseek-r2' } })
+  await SETTLE()
+  clickButton(mounted, '保存')
+  await SETTLE()
+  assert.equal(saved.settings.reasoningEffort, 'low', 'a shared effort must be kept')
+})
+
+test('choosing an effort persists it', async () => {
+  let saved = null
+  const mounted = await mountSettings(
+    { settings: { ...BASE, model: 'deepseek/deepseek-reasoner' }, routes: ROUTES_PAYLOAD.routes },
+    (body) => { saved = body },
+  )
+  selectsOf(mounted)[1].props.onChange({ target: { value: 'high' } })
+  await SETTLE()
+  clickButton(mounted, '保存')
+  await SETTLE()
+  assert.equal(saved.settings.reasoningEffort, 'high')
+})
+
+test('an empty route list still renders a usable panel', async () => {
+  const mounted = await mountSettings({ settings: BASE, routes: [] })
+  assert.deepEqual(optionValues(mounted, 0), ['current'])
+  assert.ok(textOf(mounted.tree).join('|').includes('未发现可用的模型路由'))
+})
+
+test('the model and effort controls carry accessible labels', async () => {
+  const mounted = await mountSettings({ settings: { ...BASE, model: 'deepseek/deepseek-reasoner' }, routes: ROUTES_PAYLOAD.routes })
+  const selects = selectsOf(mounted)
+  assert.equal(selects[0].props['aria-label'], '优化模型')
+  assert.equal(selects[1].props['aria-label'], '思考强度')
 })

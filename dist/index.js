@@ -14,6 +14,7 @@ import { DEFAULT_SETTINGS, normalizeSettings, parseModelRoute, readSettings, wri
 import { ROUTE_PREFIX, createRouteHandler } from "./route.js";
 // A plain-JS module: see its header for why it is not TypeScript.
 import { buildConfigSchema, loadConfigSchema } from './config.js';
+import { discoverModelRoutesDetailed } from "./optimizer/model-routes.js";
 export { ROUTE_PREFIX };
 export { DEFAULT_SETTINGS, normalizeSettings, parseModelRoute, readSettings, writeSettings };
 export { createRouteHandler, buildConfigSchema, loadConfigSchema };
@@ -31,32 +32,31 @@ export const name = 'prompt-optimizer';
  */
 export const inject = [];
 /**
- * List provider/model routes for the settings panel.
+ * Resolve the optional services this plugin can use.
  *
- * Best-effort: a profile without a model directory simply offers `current`.
+ * Cordis only exposes a service to a fiber that declared it in `inject`; a
+ * plain `ctx.llm` read from a fiber with an empty declaration returns
+ * undefined. Declaring them in `inject` is not an option either — that makes
+ * them *required*, and the plugin would wait forever in a profile that mounts
+ * no model or no web server.
+ *
+ * `ctx.inject([...])` is the supported middle ground: it resolves each service
+ * when it becomes available and never blocks the plugin on one that does not.
  *
  * @param ctx - plugin context.
- * @returns provider routes and their advertised models.
+ * @returns a live view of whichever services resolved.
  */
-function listRoutes(ctx) {
-    try {
-        const providers = ctx.llm?.listProviders?.();
-        if (!Array.isArray(providers))
-            return [];
-        return providers
-            .filter((entry) => typeof entry?.provider === 'string')
-            .map((entry) => {
-            const models = Array.isArray(entry.models)
-                ? entry.models
-                    .map((model) => (typeof model === 'string' ? model : model?.id ?? model?.model))
-                    .filter((id) => typeof id === 'string' && id.length > 0)
-                : [];
-            return { provider: entry.provider, models };
-        });
+function resolveServices(ctx) {
+    const services = {};
+    for (const name of ['webServer', 'llm', 'agentDefaultModel']) {
+        try {
+            ctx.inject?.([name], (scoped) => { services[name] = scoped[name]; });
+        }
+        catch {
+            // A service this composition does not mount is simply absent.
+        }
     }
-    catch {
-        return [];
-    }
+    return services;
 }
 /**
  * Apply the host half.
@@ -79,19 +79,50 @@ export function apply(ctx, config = {}) {
         cached = writeSettings(next);
         return cached;
     };
+    // Resolving the services is what makes them readable at all; see
+    // `resolveServices`. Reads go through this view, never through `ctx` direct.
+    const services = resolveServices(ctx);
+    /**
+     * The context handed to the optimizer and the route handlers.
+     *
+     * Rebuilt per call so a service that resolves after this plugin started — the
+     * LLM service mounts on its own schedule — is picked up without a restart.
+     */
+    const liveContext = () => ({
+        llm: services.llm,
+        agentDefaultModel: services.agentDefaultModel,
+        logger: ctx.logger,
+    });
     ctx.inject?.(['webServer'], (host) => {
         host.effect(() => host.webServer.register({
             // A prefix route keeps every path this plugin owns inside one namespace,
             // so it can never shadow a core route.
             kind: 'prefix',
             path: ROUTE_PREFIX,
-            handler: createRouteHandler({ ctx, getSettings, setSettings, listRoutes: () => listRoutes(ctx) }),
+            handler: createRouteHandler({
+                ctx: liveContext(),
+                getSettings,
+                setSettings,
+                listRoutes: () => discoverModelRoutesDetailed(services.llm),
+            }),
         }), 'dsh-prompt-optimizer: routes');
     });
     try {
         const settings = getSettings();
         ctx.logger?.info(`dsh-prompt-optimizer: active — model ${settings.model}, intensity ${settings.intensity}, `
             + `language ${settings.language}, domain detection ${settings.autoDetectDomain ? 'on' : 'off'}`);
+        // `llm` resolves on its own schedule, so the provider count is reported a
+        // moment later rather than racing the plugin's own startup line.
+        ctx.inject?.(['llm'], (scoped) => {
+            try {
+                const listed = scoped.llm?.listProviders?.();
+                const count = Array.isArray(listed) ? listed.length : 0;
+                ctx.logger?.info(`dsh-prompt-optimizer: llm available — ${count} provider route(s)`);
+            }
+            catch {
+                // Logging is best-effort.
+            }
+        });
     }
     catch {
         // Logging is best-effort.
